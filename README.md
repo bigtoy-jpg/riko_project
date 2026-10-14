@@ -64,7 +64,7 @@ uv pip install -r requirements.txt
 python -m server.main_chat
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000), allow microphone access, and click **Start listening**. Say “Riko” followed by your request. The page records your microphone, detects when you speak, and uploads each utterance to the server. Faster-Whisper transcribes it locally (no browser speech API, so it works the same on iOS Safari, Chrome, and others); if it starts with “Riko” the request goes to the language model and GPT-SoVITS voice, and the reply plays in the browser. If you only say “Riko”, the next thing you say is treated as the request.
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000), allow microphone access, and the page starts listening automatically (if the browser needs a tap, click **Start listening**). Say “Riko” followed by your request. The page records your microphone, detects when you speak, and uploads each utterance to the server. Faster-Whisper transcribes it locally (no browser speech API, so it works the same on iOS Safari, Chrome, and others); if it starts with “Riko” the request goes to the language model and GPT-SoVITS voice, and the reply plays in the browser. If you only say “Riko”, the next thing you say is treated as the request.
 
 Microphone access is limited to secure origins; `localhost` is supported. The first request loads the Whisper model, so it may be slow.
 

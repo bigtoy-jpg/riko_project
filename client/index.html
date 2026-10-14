@@ -63,7 +63,7 @@
   <body>
     <main>
       <h1>Talk to Riko</h1>
-      <p>Start listening, then say “Riko” followed by your request.</p>
+      <p>Riko listens automatically. Say “Riko” followed by your request.</p>
       <button id="toggle" type="button">Start listening</button>
       <p id="status" role="status" aria-live="polite">Microphone is off.</p>
       <p id="reply" aria-live="polite"></p>
@@ -349,6 +349,30 @@
         resetCapture();
       }
 
+      async function beginListening(fromGesture) {
+        try {
+          await startListening();
+          // Without a user gesture (e.g. iOS), the audio context stays suspended.
+          if (!fromGesture && context.state !== "running") {
+            throw Object.assign(new Error("Tap Start listening to begin."), { name: "NeedsGesture" });
+          }
+        } catch (error) {
+          stopListening();
+          if (error.name === "NeedsGesture" || (!fromGesture && error.name === "NotAllowedError")) {
+            setStatus("Tap Start listening to begin.");
+          } else if (error.name === "NotAllowedError") {
+            setStatus("Microphone permission was denied. Allow microphone access and try again.");
+          } else {
+            setStatus(error.message);
+          }
+          return;
+        }
+        enabled = true;
+        holdWakeLock();
+        toggle.textContent = "Stop listening";
+        idleStatus();
+      }
+
       toggle.addEventListener("click", async () => {
         unlockAudio();
         if (enabled) {
@@ -362,22 +386,12 @@
           setStatus("Microphone is off.");
           return;
         }
-
-        try {
-          await startListening();
-        } catch (error) {
-          stopListening();
-          const denied = error.name === "NotAllowedError";
-          setStatus(denied
-            ? "Microphone permission was denied. Allow microphone access and try again."
-            : error.message);
-          return;
-        }
-        enabled = true;
-        holdWakeLock();
-        toggle.textContent = "Stop listening";
-        idleStatus();
+        await beginListening(true);
       });
+
+      // Start listening on load when the browser allows it; otherwise wait for a tap.
+      setStatus("Starting microphone...");
+      beginListening(false);
     </script>
   </body>
 </html>
