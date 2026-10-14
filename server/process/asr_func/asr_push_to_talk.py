@@ -1,13 +1,14 @@
 import os
-import sounddevice as sd
-import soundfile as sf
 from faster_whisper import WhisperModel
 
 def record_and_transcribe(model, output_file="recording.wav", samplerate=44100):
     """
     Simple push-to-talk recorder: record -> save -> transcribe -> return text
     """
-    
+    # Terminal-only; imported lazily so servers without audio hardware still work.
+    import sounddevice as sd
+    import soundfile as sf
+
     # Remove existing file
     if os.path.exists(output_file):
         os.remove(output_file)

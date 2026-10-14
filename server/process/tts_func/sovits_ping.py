@@ -1,16 +1,26 @@
 import requests
 ### MUST START SERVERS FIRST USING START ALL SERVER SCRIPT
 import time
-import soundfile as sf 
-import sounddevice as sd
 import yaml
+from pathlib import Path
+
+CONFIG_PATH = Path(__file__).resolve().parents[3] / 'character_config.yaml'
 
 # Load YAML config
-with open('character_config.yaml', 'r') as f:
+with open(CONFIG_PATH, 'r') as f:
     char_config = yaml.safe_load(f)
 
 
+def resolve_ref_audio():
+    # Relative paths are resolved against the repo so the config works on any OS.
+    ref = Path(char_config['sovits_ping_config']['ref_audio_path'])
+    return str(ref if ref.is_absolute() else CONFIG_PATH.parent / ref)
+
+
 def play_audio(path):
+    # Local playback only; the web app plays audio in the browser instead.
+    import soundfile as sf
+    import sounddevice as sd
     data, samplerate = sf.read(path)
     sd.play(data, samplerate)
     sd.wait()  # Wait until playback is finished
@@ -21,13 +31,13 @@ def sovits_gen(in_text, output_wav_pth = "output.wav"):
     payload = {
         "text": in_text,
         "text_lang": char_config['sovits_ping_config']['text_lang'],
-        "ref_audio_path": char_config['sovits_ping_config']['ref_audio_path'],  # Make sure this path is valid
+        "ref_audio_path": resolve_ref_audio(),
         "prompt_text": char_config['sovits_ping_config']['prompt_text'],
         "prompt_lang": char_config['sovits_ping_config']['prompt_lang']
     }
 
     try:
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=120)
         response.raise_for_status()  # throws if not 200
 
         print(response)

@@ -1,0 +1,383 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#17141f">
+    <meta name="apple-mobile-web-app-title" content="Riko">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <title>Riko</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: system-ui, sans-serif;
+        background: #17141f;
+        color: #f5f0fa;
+      }
+
+      body {
+        box-sizing: border-box;
+        display: grid;
+        min-height: 100vh;
+        min-height: 100dvh;
+        margin: 0;
+        place-items: center;
+        padding: max(1.5rem, env(safe-area-inset-top)) max(1.5rem, env(safe-area-inset-right))
+          max(1.5rem, env(safe-area-inset-bottom)) max(1.5rem, env(safe-area-inset-left));
+        -webkit-text-size-adjust: 100%;
+      }
+
+      main {
+        width: min(100%, 34rem);
+        padding: 2rem;
+        border: 1px solid #494052;
+        border-radius: 1rem;
+        background: #211c2b;
+        box-shadow: 0 1rem 3rem #09070c80;
+      }
+
+      h1 { margin-top: 0; }
+      #status { min-height: 1.5em; color: #c9b7e6; }
+      #reply { white-space: pre-wrap; line-height: 1.6; }
+      button {
+        border: 0;
+        border-radius: 0.6rem;
+        padding: 0.8rem 1.1rem;
+        background: #b78ce6;
+        color: #17121e;
+        font: inherit;
+        font-size: 1rem;
+        font-weight: 700;
+        cursor: pointer;
+        min-height: 2.75rem;
+        touch-action: manipulation;
+        -webkit-tap-highlight-color: transparent;
+      }
+      audio { width: 100%; margin-top: 1rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Talk to Riko</h1>
+      <p>Start listening, then say “Riko” followed by your request.</p>
+      <button id="toggle" type="button">Start listening</button>
+      <p id="status" role="status" aria-live="polite">Microphone is off.</p>
+      <p id="reply" aria-live="polite"></p>
+      <audio id="response-audio" controls hidden playsinline></audio>
+    </main>
+    <script>
+      // Audio is captured here and transcribed on the server, because Safari's
+      // built-in speech recognition is unreliable for continuous listening on iOS.
+      const toggle = document.querySelector("#toggle");
+      const statusEl = document.querySelector("#status");
+      const reply = document.querySelector("#reply");
+      const audio = document.querySelector("#response-audio");
+
+      const TARGET_RATE = 16000;
+      const SPEECH_RMS = 0.015;
+      const END_SILENCE_SEC = 0.9;
+      const MIN_SPEECH_SEC = 0.35;
+      const MAX_UTTERANCE_SEC = 15;
+      const PREROLL_CHUNKS = 6;
+
+      const AWAKE_TIMEOUT_MS = 15000;
+      let awakeTimer;
+      let enabled = false;
+      let busy = false;
+      let awake = false;
+      let stream;
+      let context;
+      let processor;
+      let source;
+      let sink;
+      let preroll = [];
+      let chunks = [];
+      let speaking = false;
+      let silentSec = 0;
+      let speechSec = 0;
+      let totalSec = 0;
+
+      // iOS only allows audio playback after a user gesture; play silence on the tap.
+      const SILENT_WAV = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+      function unlockAudio() {
+        if (audio.dataset.unlocked) return;
+        audio.dataset.unlocked = "1";
+        audio.src = SILENT_WAV;
+        audio.play().catch(() => {});
+      }
+
+      function setStatus(message) {
+        statusEl.textContent = message;
+      }
+
+      function idleStatus() {
+        setStatus(awake ? "Riko heard you. What would you like?" : "Listening for “Riko”...");
+      }
+
+      function resetCapture() {
+        preroll = [];
+        chunks = [];
+        speaking = false;
+        silentSec = 0;
+        speechSec = 0;
+        totalSec = 0;
+      }
+
+      function downsample(samples, inRate) {
+        if (inRate === TARGET_RATE) return samples;
+        const ratio = inRate / TARGET_RATE;
+        const out = new Float32Array(Math.floor(samples.length / ratio));
+        for (let i = 0; i < out.length; i += 1) {
+          const start = Math.floor(i * ratio);
+          const end = Math.min(Math.floor((i + 1) * ratio), samples.length);
+          let sum = 0;
+          for (let j = start; j < end; j += 1) sum += samples[j];
+          out[i] = sum / Math.max(end - start, 1);
+        }
+        return out;
+      }
+
+      function encodeWav(samples) {
+        const buffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(buffer);
+        const writeText = (offset, text) => {
+          for (let i = 0; i < text.length; i += 1) view.setUint8(offset + i, text.charCodeAt(i));
+        };
+        writeText(0, "RIFF");
+        view.setUint32(4, 36 + samples.length * 2, true);
+        writeText(8, "WAVEfmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, TARGET_RATE, true);
+        view.setUint32(28, TARGET_RATE * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeText(36, "data");
+        view.setUint32(40, samples.length * 2, true);
+        for (let i = 0; i < samples.length; i += 1) {
+          const sample = Math.max(-1, Math.min(1, samples[i]));
+          view.setInt16(44 + i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
+        }
+        return new Blob([buffer], { type: "audio/wav" });
+      }
+
+      function finishUtterance() {
+        const enoughSpeech = speechSec >= MIN_SPEECH_SEC;
+        const captured = chunks;
+        resetCapture();
+        if (!enoughSpeech) return;
+
+        let length = 0;
+        for (const chunk of captured) length += chunk.length;
+        const merged = new Float32Array(length);
+        let offset = 0;
+        for (const chunk of captured) {
+          merged.set(chunk, offset);
+          offset += chunk.length;
+        }
+        sendUtterance(encodeWav(downsample(merged, context.sampleRate)));
+      }
+
+      async function sendUtterance(wav) {
+        busy = true;
+        let keepStatus = false;
+        window.clearTimeout(awakeTimer);
+        setStatus(awake ? "Thinking..." : "Checking...");
+        try {
+          const response = await fetch(`/api/listen${awake ? "?wake=1" : ""}`, {
+            method: "POST",
+            headers: { "Content-Type": "audio/wav" },
+            body: wav
+          });
+          const result = await response.json().catch(() => ({}));
+          if (!enabled) {
+            busy = false;
+            return;
+          }
+          if (result.reply) {
+            awake = false;
+            reply.textContent = `You: ${result.heard || ""}\n\nRiko: ${result.reply}`;
+          }
+          if (!response.ok) throw new Error(result.error || `Request failed (${response.status})`);
+
+          if (result.status === "awake") {
+            awake = true;
+          } else if (result.status === "reply") {
+            audio.src = result.audio_url;
+            audio.hidden = false;
+            setStatus("Riko is replying...");
+            try {
+              await audio.play();
+              return;
+            } catch {
+              keepStatus = true;
+              setStatus("Riko replied. Press play to hear her.");
+            }
+          }
+        } catch (error) {
+          awake = false;
+          keepStatus = true;
+          setStatus(error.message);
+        }
+        if (awake) awakeTimer = window.setTimeout(() => { awake = false; if (enabled && !busy) idleStatus(); }, AWAKE_TIMEOUT_MS);
+        busy = false;
+        if (enabled && !keepStatus) idleStatus();
+      }
+
+      function onAudio(event) {
+        if (!enabled || busy) {
+          if (speaking || chunks.length) resetCapture();
+          return;
+        }
+
+        const input = event.inputBuffer.getChannelData(0);
+        const chunk = new Float32Array(input);
+        const seconds = chunk.length / context.sampleRate;
+        let sum = 0;
+        for (let i = 0; i < chunk.length; i += 1) sum += chunk[i] * chunk[i];
+        const loud = Math.sqrt(sum / chunk.length) > SPEECH_RMS;
+
+        if (!speaking) {
+          preroll.push(chunk);
+          if (preroll.length > PREROLL_CHUNKS) preroll.shift();
+          if (!loud) return;
+          speaking = true;
+          chunks = preroll;
+          preroll = [];
+          silentSec = 0;
+          speechSec = 0;
+          totalSec = 0;
+          setStatus("Listening...");
+        } else {
+          chunks.push(chunk);
+        }
+
+        totalSec += seconds;
+        if (loud) {
+          silentSec = 0;
+          speechSec += seconds;
+        } else {
+          silentSec += seconds;
+        }
+        if (silentSec >= END_SILENCE_SEC || totalSec >= MAX_UTTERANCE_SEC) finishUtterance();
+      }
+
+      audio.onended = () => {
+        if (audio.src === SILENT_WAV) return;
+        busy = false;
+        if (enabled) idleStatus();
+      };
+      audio.onpause = () => {
+        if (audio.src === SILENT_WAV || audio.ended || !busy) return;
+        busy = false;
+        if (enabled) idleStatus();
+      };
+      audio.onerror = () => {
+        if (audio.src === SILENT_WAV) return;
+        busy = false;
+        setStatus("The response audio could not be played.");
+      };
+
+      async function startListening() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error("Microphone access needs a secure (HTTPS) connection.");
+        }
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 }
+        });
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        context = new AudioContextClass();
+        context.onstatechange = () => { if (context && context.state !== "running") recoverAudio(); };
+        await context.resume();
+        source = context.createMediaStreamSource(stream);
+        processor = context.createScriptProcessor(4096, 1, 1);
+        processor.onaudioprocess = onAudio;
+        // The processor only runs when connected to the destination; a muted gain keeps it silent.
+        sink = context.createGain();
+        sink.gain.value = 0;
+        source.connect(processor);
+        processor.connect(sink);
+        sink.connect(context.destination);
+      }
+
+      // Keep the screen on while listening; iOS suspends the mic when the screen locks.
+      let wakeLock;
+      async function holdWakeLock() {
+        try {
+          if ("wakeLock" in navigator && !wakeLock) {
+            wakeLock = await navigator.wakeLock.request("screen");
+            wakeLock.addEventListener("release", () => { wakeLock = undefined; });
+          }
+        } catch {}
+      }
+
+      // Safari suspends or "interrupts" the audio context on calls, locks and tab switches.
+      async function recoverAudio() {
+        if (!enabled || !context) return;
+        if (context.state !== "running") {
+          try { await context.resume(); } catch {}
+        }
+        if (stream && stream.getTracks().some(track => track.readyState === "ended")) {
+          setStatus("Microphone was interrupted. Tap Start listening to resume.");
+          enabled = false;
+          awake = false;
+          busy = false;
+          stopListening();
+          toggle.textContent = "Start listening";
+          return;
+        }
+        holdWakeLock();
+      }
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") recoverAudio();
+      });
+      window.addEventListener("pageshow", recoverAudio);
+
+      function stopListening() {
+        if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = undefined; }
+        if (processor) processor.disconnect();
+        if (source) source.disconnect();
+        if (sink) sink.disconnect();
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        if (context) context.close().catch(() => {});
+        processor = source = sink = stream = context = undefined;
+        resetCapture();
+      }
+
+      toggle.addEventListener("click", async () => {
+        unlockAudio();
+        if (enabled) {
+          enabled = false;
+          awake = false;
+          busy = false;
+          window.clearTimeout(awakeTimer);
+          audio.pause();
+          stopListening();
+          toggle.textContent = "Start listening";
+          setStatus("Microphone is off.");
+          return;
+        }
+
+        try {
+          await startListening();
+        } catch (error) {
+          stopListening();
+          const denied = error.name === "NotAllowedError";
+          setStatus(denied
+            ? "Microphone permission was denied. Allow microphone access and try again."
+            : error.message);
+          return;
+        }
+        enabled = true;
+        holdWakeLock();
+        toggle.textContent = "Stop listening";
+        idleStatus();
+      });
+    </script>
+  </body>
+</html>

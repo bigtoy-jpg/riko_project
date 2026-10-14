@@ -14,7 +14,7 @@ Project Riko is a anime focused LLM project by Just Rayen. She listens, and reme
 
 ## ⚙️ Configuration
 
-All prompts and parameters are stored in `config.yaml`.
+All prompts and parameters are stored in `character_config.yaml`.
 
 ```yaml
 OPENAI_API_KEY: sk-YOURAPIKEY
@@ -30,7 +30,7 @@ presets:
 sovits_ping_config:
   text_lang: en
   prompt_lang : en
-  ref_audio_path : D:\PyProjects\waifu_project\riko_project\character_files\main_sample.wav
+  ref_audio_path : character_files/main_sample.wav  # relative to the repo, or an absolute path
   prompt_text : This is a sample voice for you to just get started with because it sounds kind of cute but just make sure this doesn't have long silences.
   
 ````
@@ -58,27 +58,31 @@ uv pip install -r requirements.txt
 
 ### 1. Launch the GPT-SoVITS API 
 
-### 2. Run the main script:
-
+### 2. Start the web app:
 
 ```bash
-python main_chat.py
+python -m server.main_chat
 ```
 
-The flow:
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000), allow microphone access, and click **Start listening**. Say “Riko” followed by your request. The page records your microphone, detects when you speak, and uploads each utterance to the server. Faster-Whisper transcribes it locally (no browser speech API, so it works the same on iOS Safari, Chrome, and others); if it starts with “Riko” the request goes to the language model and GPT-SoVITS voice, and the reply plays in the browser. If you only say “Riko”, the next thing you say is treated as the request.
 
-1. Riko listens to your voice via microphone (push to talk)
-2. Transcribes it with Faster-Whisper
-3. Passes it to GPT (with history)
-4. Generates a response
-5. Synthesizes Riko's voice using GPT-SoVITS
-6. Plays the output back to you
+Microphone access is limited to secure origins; `localhost` is supported. The first request loads the Whisper model, so it may be slow.
+
+### Using it from an iPhone/iPad over Tailscale
+
+iOS Safari only allows microphone access over HTTPS, so expose the app with Tailscale Serve (enable MagicDNS and HTTPS certificates in your tailnet first). The app stays bound to `127.0.0.1`, and Tailscale proxies to it:
+
+```bash
+python -m server.main_chat
+tailscale serve --bg 8000
+```
+
+Then open the `https://<machine>.<tailnet>.ts.net` URL shown by `tailscale serve status` in Safari on your device, tap **Start listening**, and allow the microphone. Audio plays on the phone. For an app-like experience, tap Share → **Add to Home Screen**. The screen stays on while listening, and the mic recovers when you switch back to the page; if iOS cuts the mic (a call, for example), tap **Start listening** again. Set `RIKO_HOST` / `RIKO_PORT` to change the bind address or port.
 
 
 ## 📌 TODO / Future Improvements
 
-* [ ] GUI or web interface
-* [ ] Live microphone input support
+* [x] Web interface with wake-word listening
 * [ ] Emotion or tone control in speech synthesis
 * [ ] VRM model frontend
 
@@ -93,5 +97,3 @@ The flow:
 ## 📜 License
 
 MIT — feel free to clone, modify, and build your own waifu voice companion.
-
-
